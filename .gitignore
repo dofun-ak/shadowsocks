@@ -32,3 +32,5 @@ htmlcov
 
 playground/
 README.md
+README.rst
+.vscode
