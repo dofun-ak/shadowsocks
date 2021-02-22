@@ -202,7 +202,7 @@ class TCPRelayHandler(object):
                 uncomplete = True
             else:
                 shell.print_exception(e)
-                self.destroy()
+                self.destroy(msg='write to sock send err: {}'.format(str(e)))
                 return False
         if uncomplete:
             if sock == self._local_sock:
@@ -402,7 +402,7 @@ class TCPRelayHandler(object):
                     (errno.ETIMEDOUT, errno.EAGAIN, errno.EWOULDBLOCK):
                 return
         if not data:
-            self.destroy()
+            self.destroy(msg="local read no data, client close the sock.")
             return
         self._update_activity(len(data))
         if not is_local:
@@ -439,7 +439,7 @@ class TCPRelayHandler(object):
                     (errno.ETIMEDOUT, errno.EAGAIN, errno.EWOULDBLOCK):
                 return
         if not data:
-            self.destroy()
+            self.destroy(msg='remote read no data, remote close the sock.')
             return
         self._update_activity(len(data))
         if self._is_local:  # decrypt or encrypt data
@@ -454,7 +454,7 @@ class TCPRelayHandler(object):
             if self._config['verbose']:
                 traceback.print_exc()
             # TODO use logging when debug completed
-            self.destroy()
+            self.destroy(msg='write to sock on remote read error: {}'.format(str(e)))
 
     def _on_local_write(self):
         # handle local writable event
@@ -480,13 +480,13 @@ class TCPRelayHandler(object):
         logging.debug('got local error')
         if self._local_sock:
             logging.error(eventloop.get_sock_error(self._local_sock))
-        self.destroy()
+        self.destroy(msg='on local error')
 
     def _on_remote_error(self):
         logging.debug('got remote error')
         if self._remote_sock:
             logging.error(eventloop.get_sock_error(self._remote_sock))
-        self.destroy()
+        self.destroy(msg='on remote error')
 
     def handle_event(self, sock, event):
         # handle all events in this handler and dispatch them to methods
@@ -523,7 +523,7 @@ class TCPRelayHandler(object):
         logging.error('%s when handling connection from %s:%d' %
                       (e, self._client_address[0], self._client_address[1]))
 
-    def destroy(self):
+    def destroy(self, msg=None):
         # destroy the handler and release any resources
         # promises:
         # 1. destroy won't make another destroy() call inside
@@ -537,18 +537,18 @@ class TCPRelayHandler(object):
             return
         self._stage = STAGE_DESTROYED
         if self._remote_address:
-            logging.debug('destroy: %s:%d' %
-                          self._remote_address)
+            logging.debug('destroy: %s:%d for: %s' %
+                          (*self._remote_address, msg))
         else:
             logging.debug('destroy')
         if self._remote_sock:
-            logging.debug('destroying remote')
+            logging.debug('destroying remote: %s for: %s', self._remote_sock, msg)
             self._loop.remove(self._remote_sock)
             del self._fd_to_handlers[self._remote_sock.fileno()]
             self._remote_sock.close()
             self._remote_sock = None
         if self._local_sock:
-            logging.debug('destroying local')
+            logging.debug('destroying local: %s for: %s', self._local_sock, msg)
             self._loop.remove(self._local_sock)
             del self._fd_to_handlers[self._local_sock.fileno()]
             self._local_sock.close()
@@ -679,7 +679,6 @@ class TCPRelay(object):
                 # TODO
                 raise Exception('server_socket error')
             try:
-                logging.debug('accept')
                 # get client ip from this conn, can keep a online conn or client ip list
                 # 新连接  conn[0] local sock, conn[1] remote ip, port
                 conn = self._server_socket.accept()
