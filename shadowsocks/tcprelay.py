@@ -93,10 +93,10 @@ BUF_SIZE = 32 * 1024
 class TCPRelayHandler(object):
     def __init__(self, server, fd_to_handlers, loop, local_sock, config,
                  dns_resolver, is_local):
-        self._server = server
-        self._fd_to_handlers = fd_to_handlers
+        self._server = server  # tcp relay instance
+        self._fd_to_handlers = fd_to_handlers  # k: fd, v: tcp relay handler
         self._loop = loop
-        self._local_sock = local_sock
+        self._local_sock = local_sock  # local sock
         self._remote_sock = None
         self._config = config
         self._dns_resolver = dns_resolver
@@ -124,7 +124,7 @@ class TCPRelayHandler(object):
         local_sock.setblocking(False)
         local_sock.setsockopt(socket.SOL_TCP, socket.TCP_NODELAY, 1)
         loop.add(local_sock, eventloop.POLL_IN | eventloop.POLL_ERR,
-                 self._server)
+                 self._server)  # add the accept sock to loop
         self.last_activity = 0
         self._update_activity()
 
@@ -290,13 +290,14 @@ class TCPRelayHandler(object):
             if header_result is None:
                 raise Exception('can not parse header')
             addrtype, remote_addr, remote_port, header_length = header_result
+            # connecting, 要访问的网址，from: 客户端地址
             logging.info('connecting %s:%d from %s:%d' %
                          (common.to_str(remote_addr), remote_port,
                           self._client_address[0], self._client_address[1]))
             self._remote_address = (common.to_str(remote_addr), remote_port)
             # pause reading
             self._update_stream(STREAM_UP, WAIT_STATUS_WRITING)
-            self._stage = STAGE_DNS
+            self._stage = STAGE_DNS # dns resolve
             if self._is_local:
                 # forward address to remote
                 self._write_to_sock((b'\x05\x00\x00\x01'
@@ -368,6 +369,7 @@ class TCPRelayHandler(object):
                         try:
                             remote_sock.connect((remote_addr, remote_port))
                         except (OSError, IOError) as e:
+                            # 非阻塞套接字, 没等连接成功就返回了, 是正常的
                             if eventloop.errno_from_exception(e) == \
                                     errno.EINPROGRESS:
                                 pass
@@ -377,6 +379,8 @@ class TCPRelayHandler(object):
                         self._stage = STAGE_CONNECTING
                         self._update_stream(STREAM_UP, WAIT_STATUS_READWRITING)
                         self._update_stream(STREAM_DOWN, WAIT_STATUS_READING)
+                        logging.info('do connect and add to loop: %s, addr_port: %s, client: %s', result, \
+                            (remote_addr, remote_port), self._client_address)
                     return
                 except Exception as e:
                     shell.print_exception(e)
@@ -402,16 +406,20 @@ class TCPRelayHandler(object):
             return
         self._update_activity(len(data))
         if not is_local:
+            # server side, should decrypt data from local
             data = self._encryptor.decrypt(data)
             if not data:
                 return
+        # stage stream, data encrypt/decrypt -> write to remote
         if self._stage == STAGE_STREAM:
             if self._is_local:
+                # local side, should encrypt data from client
                 data = self._encryptor.encrypt(data)
             self._write_to_sock(data, self._remote_sock)
             return
         elif is_local and self._stage == STAGE_INIT:
             # TODO check auth method
+            # shake hand with client
             self._write_to_sock(b'\x05\00', self._local_sock)
             self._stage = STAGE_ADDR
             return
@@ -426,7 +434,6 @@ class TCPRelayHandler(object):
         data = None
         try:
             data = self._remote_sock.recv(BUF_SIZE)
-
         except (OSError, IOError) as e:
             if eventloop.errno_from_exception(e) in \
                     (errno.ETIMEDOUT, errno.EAGAIN, errno.EWOULDBLOCK):
@@ -435,11 +442,12 @@ class TCPRelayHandler(object):
             self.destroy()
             return
         self._update_activity(len(data))
-        if self._is_local:
+        if self._is_local:  # decrypt or encrypt data
             data = self._encryptor.decrypt(data)
         else:
             data = self._encryptor.encrypt(data)
         try:
+            # send back to local
             self._write_to_sock(data, self._local_sock)
         except Exception as e:
             shell.print_exception(e)
@@ -459,6 +467,7 @@ class TCPRelayHandler(object):
 
     def _on_remote_write(self):
         # handle remote writable event
+        # DNS 解析完毕，连接到remote, remote_sock wait writing, 当有上游有数据往remote写时，stage变为stream.
         self._stage = STAGE_STREAM
         if self._data_to_write_to_remote:
             data = b''.join(self._data_to_write_to_remote)
@@ -671,7 +680,10 @@ class TCPRelay(object):
                 raise Exception('server_socket error')
             try:
                 logging.debug('accept')
+                # get client ip from this conn, can keep a online conn or client ip list
+                # 新连接  conn[0] local sock, conn[1] remote ip, port
                 conn = self._server_socket.accept()
+                logging.info("new connection: %s", conn)
                 TCPRelayHandler(self, self._fd_to_handlers,
                                 self._eventloop, conn[0], self._config,
                                 self._dns_resolver, self._is_local)
